@@ -14,7 +14,7 @@ class Paths:
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "mysql+pymysql://root:rootpass@127.0.0.1:3306/db_airweather?charset=utf8mb4&ssl_disabled=true"
+    ""
 )
 
 # Required columns per spec
