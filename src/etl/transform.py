@@ -3,7 +3,7 @@ import numpy as np
 from .config import RENAME_MAP
 
 def _coerce_date_yyyy_mm_dd(series: pd.Series) -> tuple[pd.Series, pd.Series]:
-    parsed = pd.to_datetime(series, errors="coerce", dayfirst=False, infer_datetime_format=True)
+    parsed = pd.to_datetime(series, errors="coerce", dayfirst=False)
     # produce normalized string date
     norm = parsed.dt.strftime("%Y-%m-%d")
     return norm, parsed.isna()

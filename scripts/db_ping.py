@@ -2,6 +2,9 @@ import os, sys, traceback
 from sqlalchemy import create_engine, text # type: ignore
 from sqlalchemy.engine import make_url   # type: ignore
 
+from dotenv import load_dotenv
+load_dotenv(override=False)
+
 url_str = os.getenv(
     "DATABASE_URL",
     ""

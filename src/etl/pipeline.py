@@ -9,6 +9,7 @@ from .extract import extract_weather, extract_ispu, merge_outer_by_date
 from .transform import clean_and_rename
 from .db import get_engine
 from .load import _get_city_id, _get_location_id_for_city, insert_weather_and_pollutants, insert_aqi_daily
+from etl.load import load_all_in_one_transaction
 
 logger = get_logger(__name__)
 
@@ -51,8 +52,9 @@ class AirWeatherPipeline:
         logger.info(f"Clean dataframe shape: {df_clean.shape}")
 
         # 8) Load
-        insert_weather_and_pollutants(self.engine, location_id, df_clean)
-        insert_aqi_daily(self.engine, location_id, df_clean)
+        load_all_in_one_transaction(self.engine, location_id, df_clean)
+        # insert_weather_and_pollutants(self.engine, location_id, df_clean)
+        # insert_aqi_daily(self.engine, location_id, df_clean)
 
         # 9) Post-processing (archive/move)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
