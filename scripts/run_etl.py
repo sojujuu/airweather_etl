@@ -19,5 +19,7 @@ def main():
         pipeline.move_failed(weather_csv, ispu_csv)
         sys.exit(1)
 
+    # TODO: PearsonPipeline()
+
 if __name__ == "__main__":
     main()

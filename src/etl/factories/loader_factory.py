@@ -1,4 +1,4 @@
-from . import __init__  # noqa: F401
+from . import __init__  # type: ignore # noqa: F401
 from ..strategies.file_loader_strategy import JakartaFileLoader, FileLoaderStrategy
 
 class LoaderFactory:

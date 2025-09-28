@@ -1,12 +1,28 @@
 from typing import Dict
-import pandas as pd
-from sqlalchemy import text
-from sqlalchemy.engine import Engine, Connection
-from .db import fetch_scalar, fetch_one
+import pandas as pd  # type: ignore
+from sqlalchemy import text # type: ignore
+from sqlalchemy.engine import Engine, Connection # type: ignore
+from .db import fetch_scalar
 from .logging_util import get_logger
 
 logger = get_logger(__name__)
 
+__all__ = [
+    "_get_station_map_for_city",
+    "_get_city_id",
+]
+
+#solution
+def _get_station_map_for_city(engine: Engine, city_id: int) -> dict[str, int]:
+    with engine.connect() as c:
+        rows = c.execute(text("""
+            SELECT UPPER(TRIM(station_code)) AS code, location_id
+            FROM location
+            WHERE city_id = :cid
+        """), {"cid": city_id}).mappings().all()
+    return {r["code"]: int(r["location_id"]) for r in rows}
+
+#existing code...
 def _nz(v):
     """Return 0 if value is NaN/NA, else the value as-is."""
     return 0 if pd.isna(v) else v
@@ -20,7 +36,7 @@ def _get_city_id(engine: Engine, city_name: str) -> int:
         raise RuntimeError(f"City '{city_name}' not found in CITY table.")
     return int(cid)
 
-def _get_location_id_for_city(engine: Engine, city_id: int) -> int:
+def get_location_id_for_city(engine: Engine, city_id: int) -> int:
     # pick the first location for that city (or you can customize to choose by station_code)
     sql = """
     SELECT location_id FROM location WHERE city_id=:cid ORDER BY location_id LIMIT 1
@@ -58,7 +74,7 @@ def _resolve_pollobs_id_with_conn(conn: Connection, location_id: int, dt: str, p
 
 # --- Main loaders (now transaction-aware) -----------------------------------
 
-def insert_weather_and_pollutants(engine: Engine, location_id: int, df: pd.DataFrame, conn: Connection | None = None):
+def insert_weather_and_pollutants(engine: Engine, df: pd.DataFrame, conn: Connection | None = None):
     """
     Insert weather + pollutant observations.
     - If `conn` is provided, uses that connection/transaction.
@@ -87,10 +103,11 @@ def insert_weather_and_pollutants(engine: Engine, location_id: int, df: pd.DataF
             VALUES (:loc, :dt, :attr, :val)
         """)
         for _, row in df.iterrows():
+            loc = int(row["location_id"])
             dt = row["tanggal"]
             for code, col in weather_pairs:
                 if col in df.columns and code in wmap:
-                    c.execute(w_stmt, {"loc": location_id, "dt": dt, "attr": wmap[code], "val": _nz(row.get(col))})
+                    c.execute(w_stmt, {"loc": loc, "dt": dt, "attr": wmap[code], "val": _nz(row.get(col))})
 
         # POLLUTANTS
         p_stmt = text("""
@@ -98,10 +115,11 @@ def insert_weather_and_pollutants(engine: Engine, location_id: int, df: pd.DataF
             VALUES (:loc, :dt, :attr, :val)
         """)
         for _, row in df.iterrows():
+            loc = int(row["location_id"])
             dt = row["tanggal"]
             for col in pollutant_cols:
                 if col in df.columns and col in pmap:
-                    c.execute(p_stmt, {"loc": location_id, "dt": dt, "attr": pmap[col], "val": _nz(row.get(col))})
+                    c.execute(p_stmt, {"loc": loc, "dt": dt, "attr": pmap[col], "val": _nz(row.get(col))})
 
     if conn is not None:
         # Use caller's transaction
@@ -111,7 +129,7 @@ def insert_weather_and_pollutants(engine: Engine, location_id: int, df: pd.DataF
         with engine.begin() as c:
             _do_work(c)
 
-def insert_aqi_daily(engine: Engine, location_id: int, df: pd.DataFrame, conn: Connection | None = None):
+def insert_aqi_daily(engine: Engine, df: pd.DataFrame, conn: Connection | None = None):
     """
     Insert/Upsert AQI daily rows.
     - If `conn` is provided, uses that connection/transaction.
@@ -119,10 +137,11 @@ def insert_aqi_daily(engine: Engine, location_id: int, df: pd.DataFrame, conn: C
     """
     def _do_work(c: Connection):
         for _, row in df.iterrows():
+            loc = int(row["location_id"])
             dt = row["tanggal"]
             kategori = (row.get("kategori_ispu") or "").strip()
             dom = (row.get("polutan_dominan") or "").strip()
-            dom_id = _resolve_pollobs_id_with_conn(c, location_id, dt, dom)
+            dom_id = _resolve_pollobs_id_with_conn(c, loc, dt, dom)
 
             aqicat = c.execute(
                 text("SELECT aqicat_id FROM aqi_category WHERE aqicat_name=:name"),
@@ -139,7 +158,7 @@ def insert_aqi_daily(engine: Engine, location_id: int, df: pd.DataFrame, conn: C
                 ON DUPLICATE KEY UPDATE
                     aqicat_id=VALUES(aqicat_id),
                     dominant_pollobs_id=VALUES(dominant_pollobs_id)
-            """), {"loc": location_id, "dt": dt, "aqi": aqicat_id, "dom": dom_id})
+            """), {"loc": loc, "dt": dt, "aqi": aqicat_id, "dom": dom_id})
 
     if conn is not None:
         # Use caller's transaction
@@ -151,12 +170,12 @@ def insert_aqi_daily(engine: Engine, location_id: int, df: pd.DataFrame, conn: C
 
 # --- Convenience wrapper to run BOTH steps atomically -----------------------
 
-def load_all_in_one_transaction(engine: Engine, location_id: int, df: pd.DataFrame):
+def load_all_in_one_transaction(engine: Engine, df: pd.DataFrame):
     """
     Run weather/pollutant inserts and AQI daily inserts in ONE transaction.
     - If any step fails, the whole transaction rolls back.
     - On success, it commits once.
     """
     with engine.begin() as c:
-        insert_weather_and_pollutants(engine, location_id, df, conn=c)
-        insert_aqi_daily(engine, location_id, df, conn=c)
+        insert_weather_and_pollutants(engine, df, conn=c)
+        insert_aqi_daily(engine, df, conn=c)
