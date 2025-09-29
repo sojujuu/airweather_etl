@@ -8,6 +8,16 @@ def _coerce_date_yyyy_mm_dd(series: pd.Series) -> tuple[pd.Series, pd.Series]:
     norm = parsed.dt.strftime("%Y-%m-%d")
     return norm, parsed.isna()
 
+SPECIAL_MISSING = {"8888","9999","-999","-9999","na","n/a","null","none",""," "}
+
+def normalize_special_missing(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].astype(str).str.strip()
+            df[c] = df[c].replace(list(SPECIAL_MISSING), np.nan)
+    return df
+
 def fill_missing_ffill_bfill(df: pd.DataFrame, cols: list[str]):
     for c in cols:
         if c in df.columns:
@@ -16,6 +26,9 @@ def fill_missing_ffill_bfill(df: pd.DataFrame, cols: list[str]):
 
 def clean_and_rename(df_airweather: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = df_airweather.copy()
+    
+    # 0) Special missing handling
+    df = normalize_special_missing(df)
 
     # 1) Coerce tanggal
     df["tanggal"], bad = _coerce_date_yyyy_mm_dd(df["tanggal"])
