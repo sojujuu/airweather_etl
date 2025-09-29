@@ -85,3 +85,10 @@ airweather_etl/
 - `pollutant_attribute.pollutantattr_code` may be uppercase in your master data. Loader normalizes comparisons case‑insensitively, so `pm10` and `PM10` match.
 - `dominant_pollobs_id` is set by finding the matching `pollutant_observation` row for the day and dominant pollutant code.
 - All inserts are batched within a single transaction. On any error the transaction is rolled back and files are moved to `FAILED/`.
+
+
+## How to run scheduler
+   ```bash
+   uv run python scripts/schedule_runner.py
+   uv run python scripts/schedule_runner.py --today 2025-10-31
+   ```

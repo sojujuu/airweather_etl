@@ -1,12 +1,17 @@
-import sys, os, traceback
-from etl.pipeline import AirWeatherPipeline
+import sys, os, traceback, argparse
+from datetime import date
+from sqlalchemy.orm import sessionmaker # type: ignore
+from etl.db import get_engine
+from etl.pipeline.airweather_pipeline import AirWeatherPipeline
+from etl.pipeline.pearson_pipeline import PearsonPipeline
 from etl.logging_util import get_logger
 from etl.config import Paths
 
 logger = get_logger("airweather.run")
 
+
 def main():
-    # default filenames for Jakarta
+    #AirWeatherPipeline
     weather_csv = os.environ.get("WEATHER_CSV", "cuaca_harian_jakarta.csv")
     ispu_csv    = os.environ.get("ISPU_CSV", "ispu_harian_jakarta.csv")
 
@@ -18,8 +23,25 @@ def main():
         traceback.print_exc()
         pipeline.move_failed(weather_csv, ispu_csv)
         sys.exit(1)
+    
+    #PeasonPipeline
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['weekly','monthly'], required=True)
+    parser.add_argument('--today', type=str, default=None)
+    args = parser.parse_args()
 
-    # TODO: PearsonPipeline()
+    today = date.today() if args.today is None else date.fromisoformat(args.today)
+
+    db_url = os.getenv("DATABASE_URL", "mysql+mysqlconnector://root:root@localhost/db_airweather")
+    engine = get_engine(db_url)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    pipeline = PearsonPipeline(session)
+    if args.mode == 'weekly':
+        pipeline.run_weekly(today)
+    else:
+        pipeline.run_monthly(today)
 
 if __name__ == "__main__":
     main()

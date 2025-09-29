@@ -3,6 +3,7 @@ ARCHIVED
 FAILED
 .env
 load2.txt
+*/.DS_Store
 .DS_Store
 __pycache__/
 *.pyc
