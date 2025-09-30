@@ -84,6 +84,11 @@ airweather_etl/
 ### Run ETL Manually
 ```bash
 uv run python scripts/run_etl.py
+uv run python scripts/run_etl.py --mode weekly --today 2014-01-05
+uv run python scripts/run_etl.py --mode weekly --today 2014-01-12
+uv run python scripts/run_etl.py --mode weekly --today 2014-01-19
+uv run python scripts/run_etl.py --mode weekly --today 2014-01-26
+uv run python scripts/run_etl.py --mode monthly --today 2024-01-31
 ```
 
 ### Run Pearson Correlation Pipeline
@@ -95,7 +100,6 @@ uv run python -m etl.pipeline.pearson_pipeline
 ```bash
 uv run python scripts/db_ping.py
 ```
-
 ---
 
 ## ⏰ Scheduling
@@ -140,7 +144,6 @@ Run unit tests with:
 ```bash
 uv run pytest
 ```
-
 ---
 
 ## 📊 Outputs
