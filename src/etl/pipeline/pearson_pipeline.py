@@ -1,4 +1,5 @@
 from etl.logging_util import get_logger
+from etl.db import get_session
 from datetime import date, timedelta
 from typing import List, Tuple, Optional
 import pandas as pd 
@@ -19,8 +20,8 @@ def last_sunday_before_or_on(d: date) -> date:
     return d - timedelta(days=offset)
 
 class PearsonPipeline:
-    def __init__(self, db_session: Session):
-        self.db = db_session
+    def __init__(self, db_session: Session | None = None):
+        self.db = db_session or get_session()
 
     def get_date_range_weekly(self, today: date) -> Tuple[date, date]:
         start = today - timedelta(days=6)

@@ -8,14 +8,10 @@ def _coerce_date_yyyy_mm_dd(series: pd.Series) -> tuple[pd.Series, pd.Series]:
     norm = parsed.dt.strftime("%Y-%m-%d")
     return norm, parsed.isna()
 
-SPECIAL_MISSING = {"8888","9999","-999","-9999","na","n/a","null","none",""," "}
-
 def normalize_special_missing(df: pd.DataFrame) -> pd.DataFrame:
+    SPECIAL_MISSING = {"8888","9999","-999","-9999","na","n/a","null","none",""," "}
     df = df.copy()
-    for c in df.columns:
-        if df[c].dtype == object:
-            df[c] = df[c].astype(str).str.strip()
-            df[c] = df[c].replace(list(SPECIAL_MISSING), np.nan)
+    df = df.replace(list(SPECIAL_MISSING), np.nan)
     return df
 
 def fill_missing_ffill_bfill(df: pd.DataFrame, cols: list[str]):

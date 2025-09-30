@@ -8,7 +8,6 @@ from ..extract import extract_weather, extract_ispu, merge_outer_by_date
 from ..transform import clean_and_rename
 from ..db import get_engine
 from ..load import _get_city_id, _get_station_map_for_city, load_all_in_one_transaction
-# from .load import _get_city_id, _get_location_id_for_city, insert_weather_and_pollutants, insert_aqi_daily
 
 logger = get_logger(__name__)
 

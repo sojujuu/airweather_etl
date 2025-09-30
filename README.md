@@ -1,94 +1,166 @@
-# AirWeather ETL (Jakarta)
-Object‑oriented ETL pipeline (Factory + Strategy style) for merging Jakarta daily weather and ISPU air‑quality CSVs, cleansing, and loading into the `db_airweather` MySQL data warehouse.
+# 🌤️ AirWeather ETL
 
-## Requirements you provided
-- Data feeds: `cuaca_harian_*.csv`, `ispu_harian_*.csv`
-- Database schema: `db_airweather.sql`
-- Static master data: `static_data.sql`
-- Sample loader program (pattern reference): `loaders.zip` (this solution follows Factory + Strategy)
+AirWeather ETL is a Python-based data pipeline that integrates **daily weather data** (BMKG) with **air quality data** (ISPU Jakarta).  
+The system extracts, transforms, and loads (ETL) CSV data into a MySQL star-schema warehouse, and computes **Pearson** and **Spearman correlation** metrics for monitoring the relationship between weather and air pollution.
 
-## What this project does
-1. **Validate files** under `INCOMING/`:
-   - Both CSVs must exist and be comma‑separated.
-   - File names must end with the city before `.csv` (e.g., `..._jakarta.csv`), which must exist in `city.name`. The resolved `location_id` is looked up from `location` table using the city's id (first match), and `CITY_ID` is carried across loads.
-   - Required columns are verified (see below). Column `DDD_CAR` is ignored if present.
-2. **Extract & Merge** with outer join by `tanggal` to form `df_airweather` (ascending by date).
-3. **Transform** (missing‑value ffill/bfill, date normalization `YYYY-MM-DD`, drop bad rows, rename to snake_case per spec).
-4. **Load** into MySQL tables:
-   - `weather_observation`
-   - `pollutant_observation`
-   - `aqi_daily` (including `dominant_pollobs_id` resolution)
-5. **Post‑processing**:
-   - On success: archive files into `ARCHIVED/` with timestamp.
-   - On failure: move files into `FAILED/` with timestamp.
-6. **Logging**:
-   - Detailed processing logs are written into `LOG/LOG_YYYYMMDD_HHMMSS.log`.
-7. **Unit tests**:
-   - Core validation and transform functions are covered. DB tests are optional and skipped unless `AIRWEATHER_ENABLE_DB_TESTS=1`.
+---
 
-## Project layout
+## 🚀 Features
+
+- **ETL Pipeline**  
+  - `AirWeatherPipeline`: cleanses and loads weather + ISPU CSVs into MySQL.  
+  - `PearsonPipeline`: computes Pearson correlation (with Spearman validation).  
+
+- **Configurable Data Paths** via `etl/config.py`  
+- **Logging System** with timestamped log files in `LOG/`  
+- **Incoming / Archived Data Management**  
+- **Dockerized Deployment** with support for cron-based scheduling  
+- **Unit Tests** powered by `pytest`
+
+---
+
+## 📂 Project Structure
+
 ```
 airweather_etl/
-  INCOMING/           # put your two CSVs here
-  ARCHIVED/
-  FAILED/
-  LOG/
-  etl/
-    __init__.py
-    config.py
-    logging_util.py
-    db.py
-    validators.py
-    extract.py
-    transform.py
-    load.py
-    pipeline.py
-    strategies/
-      __init__.py
-      file_loader_strategy.py
-    factories/
-      __init__.py
-      loader_factory.py
-  tests/
-    test_validation.py
-    test_transform.py
-  scripts/
-    run_etl.py
-  README.md
-  requirements.txt
-  .env.example
+├── INCOMING/               # Raw CSVs to be ingested
+│   ├── cuaca_harian_jakarta.csv
+│   └── ispu_harian_jakarta.csv
+├── ARCHIVED/               # Processed CSVs moved after successful ETL
+├── LOG/                    # Log files
+├── scripts/
+│   ├── run_etl.py          # Main entry to run AirWeather ETL
+│   ├── schedule_runner.py  # Runner with cron-like scheduling
+│   └── db_ping.py          # Simple DB connectivity check
+├── src/etl/
+│   ├── extract.py
+│   ├── transform.py
+│   ├── load.py
+│   ├── db.py               # Database utilities
+│   ├── config.py           # Centralized config & paths
+│   ├── validators.py
+│   ├── logging_util.py
+│   ├── factories/loader_factory.py
+│   ├── strategies/file_loader_strategy.py
+│   └── pipeline/
+│       ├── airweather_pipeline.py
+│       └── pearson_pipeline.py
+├── tests/                  # Unit tests
+│   ├── test_transform.py
+│   ├── test_validation.py
+│   └── test_schedule.py
+├── requirements.txt
+├── pyproject.toml
+├── uv.lock
+└── README.md
 ```
 
-## How to run
-1. Ensure MySQL is running and execute your `db_airweather.sql` and `static_data.sql` first.
-2. Put your CSV files into `INCOMING/`, for example:
-   - `INCOMING/cuaca_harian_jakarta.csv`
-   - `INCOMING/ispu_harian_jakarta.csv`
-3. Configure database URL in environment. Create `.env` from `.env.example` or set OS env var.
-4. Install dependencies:
+---
+
+## ⚙️ Installation
+
+1. Clone the repository:
    ```bash
-   brew install astral-sh/uv/uv
-   uv venv 
-   uv pip install -r requirements.txt
-   uv run pytest
-   ```
-5. Run the ETL:
-   ```bash
-   uv run python scripts/run_etl.py
+   git clone https://github.com/yourusername/airweather_etl.git
+   cd airweather_etl
    ```
 
-## Required columns
-- **Weather** `cuaca_harian_*.csv`: `TANGGAL,TN,TX,TAVG,RH_AVG,RR,SS,FF_X,DDD_X,FF_AVG,DDD_CAR` (note: `DDD_CAR` will be ignored if present)
-- **ISPU** `ispu_harian_*.csv`: `Tanggal,stasiun,pm25,pm10,so2,co,o3,no2,max,critical,categori`
-
-## Notes
-- `pollutant_attribute.pollutantattr_code` may be uppercase in your master data. Loader normalizes comparisons case‑insensitively, so `pm10` and `PM10` match.
-- `dominant_pollobs_id` is set by finding the matching `pollutant_observation` row for the day and dominant pollutant code.
-- All inserts are batched within a single transaction. On any error the transaction is rolled back and files are moved to `FAILED/`.
-
-
-## How to run scheduler
+2. Install dependencies with [uv](https://github.com/astral-sh/uv):
    ```bash
-   uv run python scripts/schedule_runner.py
-   uv run python scripts/schedule_runner.py --today 2025-10-31
+   uv sync
    ```
+
+3. Set up environment variables in `env.txt` or `.env`:
+   ```env
+   DATABASE_URL=mysql+mysqlconnector://user:password@localhost/db_airweather
+   WEATHER_CSV=cuaca_harian_jakarta.csv
+   ISPU_CSV=ispu_harian_jakarta.csv
+   ```
+
+---
+
+## ▶️ Usage
+
+### Run ETL Manually
+```bash
+uv run python scripts/run_etl.py
+```
+
+### Run Pearson Correlation Pipeline
+```bash
+uv run python -m etl.pipeline.pearson_pipeline
+```
+
+### Check Database Connection
+```bash
+uv run python scripts/db_ping.py
+```
+
+---
+
+## ⏰ Scheduling
+
+This project supports **cron-style scheduling** inside Docker.
+
+Example `docker-compose.yml` service with cron:
+
+```yaml
+services:
+  etl:
+    build: .
+    container_name: airweather_etl
+    volumes:
+      - ./INCOMING:/app/INCOMING
+      - ./ARCHIVED:/app/ARCHIVED
+      - ./LOG:/app/LOG
+    command: ["sh", "-c", "crond -f -l 2"]
+```
+
+And define schedules in `etl-cron` format, e.g.:
+
+```cron
+# Run ETL every 10 minutes
+*/10 * * * * uv run python scripts/run_etl.py
+
+# Run ETL every 1 hour
+0 * * * * uv run python scripts/run_etl.py
+
+# Run ETL every 12 hours
+0 */12 * * * uv run python scripts/run_etl.py
+
+# Run ETL at specific time (e.g., 01:30)
+30 1 * * * uv run python scripts/run_etl.py
+```
+
+---
+
+## 🧪 Testing
+
+Run unit tests with:
+```bash
+uv run pytest
+```
+
+---
+
+## 📊 Outputs
+
+- **Database**: MySQL star-schema (`db_airweather`) with dimensions and fact tables  
+- **Correlation Results**:  
+  - Pearson correlation (`pearson_r`, `pearson_p`)  
+  - Spearman validation (`spearman_rho`, `spearman_p`)  
+- **Logs**: stored in `LOG/`
+
+---
+
+## 📌 Roadmap
+
+- [ ] Extend ETL to support multi-city weather data  
+- [ ] Add real-time streaming option  
+- [ ] Build dashboard with Metabase / Grafana  
+
+---
+
+## 📜 License
+
+MIT License
