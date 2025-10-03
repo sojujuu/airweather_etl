@@ -1,0 +1,46 @@
+services:
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: airweather:latest
+    container_name: airweather-etl
+    restart: unless-stopped
+    environment:
+      # Tambahkan env DB kalau perlu, contoh:
+      # DB_URL: "mysql+pymysql://user:pass@mysql:3306/db_airweather"
+      TZ: "Asia/Jakarta"
+    volumes:
+      # Map 4 folder ke path lokal Anda (macOS):
+      - /Users/julius/airweather_docker/ARCHIVED:/data/ARCHIVED
+      - /Users/julius/airweather_docker/FAILED:/data/FAILED
+      - /Users/julius/airweather_docker/INCOMING:/data/INCOMING
+      - /Users/julius/airweather_docker/LOG:/data/LOG
+      - /Users/julius/airweather_docker/scripts:/app/scripts
+    # Default hanya idle; jalankan manual dengan:
+    # docker compose run --rm etl uv run python scripts/run_etl.py --mode weekly --today 2024-09-01
+    command: [ "bash", "-lc", "tail -f /dev/null" ]
+
+  scheduler:
+    image: airweather:latest
+    container_name: airweather-cron
+    depends_on:
+      - etl
+    restart: unless-stopped
+    environment:
+      TZ: "Asia/Jakarta"
+    volumes:
+      - /Users/julius/airweather_docker/ARCHIVED:/data/ARCHIVED
+      - /Users/julius/airweather_docker/FAILED:/data/FAILED
+      - /Users/julius/airweather_docker/INCOMING:/data/INCOMING
+      - /Users/julius/airweather_docker/LOG:/data/LOG
+      # Mount file crontab dari host agar mudah ubah jadwal tanpa rebuild
+      - /Users/julius/airweather_docker/scripts/airweather-cron:/etc/cron.d/airweather:ro
+    # Debian cron needs correct perms on /etc/cron.d files: 0644 and root-owned.
+    # Kita jalankan cron di foreground agar container stay alive.
+    command: [ "bash", "-lc", "chmod 0644 /etc/cron.d/airweather && crontab -u appuser /etc/cron.d/airweather || true; cron -f -L 2" ]
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "pgrep -x cron >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5

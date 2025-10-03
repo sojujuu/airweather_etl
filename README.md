@@ -29,6 +29,7 @@ airweather_etl/
 ├── ARCHIVED/               # Processed CSVs moved after successful ETL
 ├── LOG/                    # Log files
 ├── scripts/
+│   ├── airweather-cron 
 │   ├── run_etl.py          # Main entry to run AirWeather ETL
 │   ├── schedule_runner.py  # Runner with cron-like scheduling
 │   └── db_ping.py          # Simple DB connectivity check

@@ -1,0 +1,33 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# AirWeather cron (dibaca oleh container `scheduler`)
+# NOTE:
+# - Format /etc/cron.d/ membutuhkan kolom USER setelah schedule
+# - Kita pakai user 'appuser' (dibuat di Dockerfile)
+# - Semua output diarahkan ke /data/LOG/cron.log (ter-mount ke host)
+# - uv sudah ada di PATH (pip install uv + UV_SYSTEM_PYTHON=1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ENV untuk cron jobs
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Every 10 minutes
+# */10 * * * * appuser cd /app && uv run python scripts/schedule_runner.py >> /data/LOG/cron.log 2>&1
+
+# Every 1 hour at minute 0
+# 0 * * * * appuser cd /app && uv run python scripts/schedule_runner.py --mode hourly >> /data/LOG/cron.log 2>&1
+
+# Every 5 hours at minute 0
+0 */5 * * * appuser cd /app && uv run python scripts/schedule_runner.py --mode hourly >> /data/LOG/cron.log 2>&1
+
+# Every 12 hours at 00:00 and 12:00
+# 0 0,12 * * * appuser cd /app && uv run python scripts/schedule_runner.py --mode 12h >> /data/LOG/cron.log 2>&1
+
+# Specific time (e.g., 02:30 every day)
+# 30 2 * * * appuser cd /app && uv run python scripts/run_etl.py --mode daily --today $(date +\%F) >> /data/LOG/cron.log 2>&1
+
+# Weekly run (every Sunday 03:15)
+# 15 3 * * 0 appuser cd /app && uv run python scripts/run_etl.py --mode weekly --today $(date +\%F) >> /data/LOG/cron.log 2>&1
+
+# Monthly run (on the last day of month 01:05) — uses Linux date trick
+# 5 1 28-31 * * appuser bash -lc 'd=$(date +\%d -d tomorrow); if [ "$d" = "01" ]; then cd /app && uv run python scripts/run_etl.py --mode monthly --today $(date +\%F) >> /data/LOG/cron.log 2>&1; fi'
