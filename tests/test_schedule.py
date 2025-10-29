@@ -1,4 +1,3 @@
-
 import sys, types
 # ---- Lightweight stubs to avoid heavy deps ----
 sqlalchemy = types.ModuleType("sqlalchemy")
@@ -12,14 +11,14 @@ sqlalchemy.orm = types.ModuleType("sqlalchemy.orm")
 class Session: pass
 sqlalchemy.orm.Session = Session
 def _sessionmaker(**kw):
-    def _factory(*a, **k): 
-        class _S: 
+    def _factory(*a, **k):
+        class _S:
             def __enter__(self): return self
             def __exit__(self, *a): return False
             def execute(self, *a, **k):
                 class R:
                     def scalar(self): return 1
-                    def mappings(self): 
+                    def mappings(self):
                         class M:
                             def first(self): return {}
                             def all(self): return []
@@ -44,16 +43,21 @@ sys.modules['scipy.stats'] = stats
 import pytest
 from datetime import date, timedelta
 from etl.pipeline.pearson_pipeline import (
-    last_sunday_before_or_on, 
+    last_sunday_before_or_on,
     month_last_day,
-    PearsonPipeline
+    PearsonPipeline,
+    DEFAULT_CITY_ID,  # for asserting city_id param in fetch_pairs
 )
+
+# Helper so patched fetch_pairs is compatible with new signature (accepts **kw like city_id)
+def fp_rows(rows):
+    return lambda s, e, **kw: rows
 
 # Helper to check "is a Sunday <= d and there is no Sunday in (result+1..d)"
 def _is_latest_sunday(result: date, d: date) -> bool:
     if not isinstance(result, date):
         return False
-    if result > d: 
+    if result > d:
         return False
     if result.weekday() != 6:  # Monday=0..Sunday=6
         return False
@@ -96,8 +100,6 @@ def test_month_last_day(d, expected):
 # get_date_range_weekly
 # -----------------------------
 
-from etl.pipeline.pearson_pipeline import PearsonPipeline
-
 def test_weekly_window_inside_month():
     p = PearsonPipeline()
     # Wed 2024-09-18 -> trailing 7-day window within September: 12..18
@@ -135,7 +137,7 @@ def test_leftover_weekly_range_when_month_ends_midweek():
 
 def test_no_leftover_when_month_ends_on_sunday():
     p = PearsonPipeline()
-    # March 2020 ended on Tuesday -> leftover exists; but pick a month ending on Sunday: May 2020 ended on Sunday 31
+    # May 2020 ended on Sunday 31
     leftover = p.get_leftover_weekly_range_for_month_end(date(2020, 5, 31))
     assert leftover is None
 
@@ -159,8 +161,6 @@ def test_pipeline_smoke_init():
     # Should at least have logger bound and methods callable
     assert hasattr(p, "get_date_range_weekly")
     assert callable(p.get_date_range_monthly)
-
-
 
 # -----------------------------
 # classify coverage
@@ -224,8 +224,6 @@ def test_run_monthly_calls_process_range(monkeypatch):
     assert name == "MONTH_202402"
     assert d == today
 
-
-
 # -----------------------------
 # _process_range coverage (happy path and empty)
 # -----------------------------
@@ -247,21 +245,27 @@ def test_process_range_happy_path(monkeypatch):
     # Inject fake DB & data
     fdb = FakeDB()
     p.db = fdb
-    # Two groups (corrmet_id, location_id)
+    # Two groups (corrmet_id)
     rows = [
-        (1, 10, date(2024,9,1), 1.0,  2.0),
-        (1, 10, date(2024,9,2), 2.0,  4.0),
-        (2, 20, date(2024,9,1), 3.0,  9.0),
-        (2, 20, date(2024,9,2), 4.0, 16.0),
+        # (corrmet_id, obs_date, wx_val, py_val)
+        (1, date(2024, 9, 1), 1.0,  2.0),
+        (1, date(2024, 9, 2), 2.0,  4.0),
+        (2, date(2024, 9, 1), 3.0,  9.0),
+        (2, date(2024, 9, 2), 4.0, 16.0),
     ]
-    monkeypatch.setattr(p, "fetch_pairs", lambda s, e: rows)
+    # accept optional city_id without breaking
+    monkeypatch.setattr(p, "fetch_pairs", fp_rows(rows))
+
     # Patch stats to deterministic numbers and classification check
     import etl.pipeline.pearson_pipeline as mod
-    monkeypatch.setattr(mod, "pearsonr", lambda x, y: (0.85, 0.0))
+    monkeypatch.setattr(mod, "pearsonr",  lambda x, y: (0.85, 0.0))
     monkeypatch.setattr(mod, "spearmanr", lambda x, y: (0.83, 0.0))
     # Run
-    inserted = p._process_range(date(2024,9,1), date(2024,9,2), "WEEK_2024-09-01_2024-09-02", date(2024,9,3))
-    # Expect 2 inserts, one per group
+    inserted = p._process_range(
+        date(2024,9,1), date(2024,9,2),
+        "WEEK_2024-09-01_2024-09-02", date(2024,9,3)
+    )
+    # Expect 2 inserts, one per corrmet_id
     assert inserted == 2
     assert fdb.commits == 1
     # Verify params of last execute include our classification
@@ -270,8 +274,11 @@ def test_process_range_happy_path(monkeypatch):
 def test_process_range_no_rows(monkeypatch):
     p = PearsonPipeline()
     p.db = FakeDB()
-    monkeypatch.setattr(p, "fetch_pairs", lambda s, e: [])
-    inserted = p._process_range(date(2024,1,1), date(2024,1,1), "WEEK_...", date(2024,1,2))
+    # fetch_pairs returns empty but still accepts **kw
+    monkeypatch.setattr(p, "fetch_pairs", fp_rows([]))
+    inserted = p._process_range(
+        date(2024,1,1), date(2024,1,1), "WEEK_...", date(2024,1,2)
+    )
     assert inserted == 0
     # no commit when nothing inserted
     assert p.db.commits == 0
@@ -286,12 +293,16 @@ def test_fetch_pairs_calls_execute_with_bounds(monkeypatch):
         def execute(self, sql, params):
             captured['params'] = params
             class R:
-                def fetchall(self): 
-                    return [(1, 1, date(2024,1,1), 1.0, 2.0)]
+                def fetchall(self):
+                    # New shape: (corrmet_id, obs_date, wx_val, py_val)
+                    return [(1, date(2024,1,1), 1.0, 2.0)]
             return R()
     p = PearsonPipeline()
     p.db = DB()
     rows = p.fetch_pairs(date(2024,1,1), date(2024,1,7))
-    assert rows and rows[0][0] == 1
+    assert rows and rows[0][0] == 1 and len(rows[0]) == 4
     assert captured['params']['start'] == date(2024,1,1)
     assert captured['params']['end'] == date(2024,1,7)
+    # the pipeline passes city_id implicitly (default)
+    assert 'city_id' in captured['params']
+    assert captured['params']['city_id'] == DEFAULT_CITY_ID

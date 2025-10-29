@@ -10,6 +10,10 @@ from scipy.stats import pearsonr, spearmanr
 
 logger = get_logger(__name__)
 
+# --- City / Location constants for city-level aggregation ---
+DEFAULT_CITY_ID = 1          # Jakarta
+CITY_AGG_LOC_ID = 6          # location_id = 'CITY_AGG_JKT' (CITY_AGG_JAKARTA)
+
 def month_last_day(d: date) -> date:
     if d.month == 12:
         return date(d.year, 12, 31)
@@ -42,58 +46,190 @@ class PearsonPipeline:
             return (start, end)
         return None
 
-    def fetch_pairs(self, start: date, end: date) -> List[Tuple]:
+    def fetch_pairs(self, start: date, end: date, city_id: int = DEFAULT_CITY_ID) -> List[Tuple]:
+        """
+        Ambil pasangan nilai WX dan PY yang sudah di-AGGREGATE per HARI pada level kota.
+
+        Perbedaan dibanding versi lama (per stasiun):
+        - Kita bentuk deret tanggal `d` dari UNION weather_observation & pollutant_observation,
+        sehingga semua hari yang ada di salah satu sisi tetap muncul (kalender harian utuh).
+        - weather_observation (wo) dan pollutant_observation (po) tetap di-LEFT JOIN ke `d`,
+        agar hari tidak hilang saat salah satu sisi kosong.
+        - Pembatasan kota DIPINDAH ke dalam agregasi:
+            AVG(CASE WHEN lw.city_id = :city_id THEN wo.weatherobs_value END) AS wx_val
+            AVG(CASE WHEN lp.city_id = :city_id THEN po.pollobs_value    END) AS py_val
+        → hanya nilai dari kota yang dimaksud yang dihitung, tanpa menghapus harinya.
+        - Hasil akhirnya: 1 baris per (corrmet_id, tanggal) dengan wx_val & py_val
+        berupa rata-rata harian seluruh stasiun di kota tersebut (city-average).
+        - Dengan granularitas harian yang konsisten, weekly biasanya ~7 titik dan monthly ~28–31,
+        sehingga risiko INCONCLUSIVE karena n terlalu kecil jauh berkurang.
+        """
         sql = text(
             """
-            SELECT cm.corrmet_id, wo.location_id,
-                    wo.weatherobs_date, wo.weatherobs_value, po.pollobs_value
+            SELECT
+            cm.corrmet_id,
+            d.dt AS obs_date,
+            AVG(CASE WHEN lw.city_id = :city_id THEN wo.weatherobs_value END) AS wx_val,
+            AVG(CASE WHEN lp.city_id = :city_id THEN po.pollobs_value    END) AS py_val
             FROM correlation_metrics cm
-            JOIN weather_observation wo ON wo.weatherattr_id = cm.weather_x
-            JOIN pollutant_observation po 
-                    ON po.pollutantattr_id = cm.pollutant_y
-                AND po.pollobs_date = wo.weatherobs_date
-                AND po.location_id = wo.location_id
+
+            -- Deret tanggal: gabungan tanggal yang ada di salah satu sisi (cuaca/polutan)
+            JOIN (
+            SELECT weatherobs_date AS dt
+            FROM weather_observation
+            WHERE weatherobs_date BETWEEN :start AND :end
+            UNION
+            SELECT pollobs_date AS dt
+            FROM pollutant_observation
+            WHERE pollobs_date BETWEEN :start AND :end
+            ) d
+
+            -- Sisi cuaca: LEFT JOIN agar hari tetap muncul jika tidak ada data cuaca
+            LEFT JOIN weather_observation wo
+                ON wo.weatherattr_id   = cm.weather_x
+                AND wo.weatherobs_date  = d.dt
+            LEFT JOIN location lw
+                ON lw.location_id      = wo.location_id
+
+            -- Sisi polutan: LEFT JOIN agar hari tetap muncul jika tidak ada data polutan
+            LEFT JOIN pollutant_observation po
+                ON po.pollutantattr_id = cm.pollutant_y
+                AND po.pollobs_date     = d.dt
+            LEFT JOIN location lp
+                ON lp.location_id      = po.location_id
+
             WHERE cm.is_active = 1
-                AND wo.weatherobs_date BETWEEN :start AND :end
-            ORDER BY cm.corrmet_id, wo.location_id, wo.weatherobs_date
+            GROUP BY cm.corrmet_id, d.dt
+            ORDER BY cm.corrmet_id, d.dt
             """
         )
-        rows = self.db.execute(sql, {"start": start, "end": end}).fetchall()
+        rows = self.db.execute(
+            sql, {"start": start, "end": end, "city_id": city_id}
+        ).fetchall()
         return rows
 
-    def classify(self, pearson_r, spearman_rho, n_obs):
+    # Versi lama, sebelum pakai city-level aggregatio
+    # def fetch_pairs(self, start: date, end: date) -> List[Tuple]:
+    #     sql = text(
+    #         """
+    #         SELECT cm.corrmet_id, wo.location_id,
+    #                 wo.weatherobs_date, wo.weatherobs_value, po.pollobs_value
+    #         FROM correlation_metrics cm
+    #         JOIN weather_observation wo ON wo.weatherattr_id = cm.weather_x
+    #         JOIN pollutant_observation po 
+    #                 ON po.pollutantattr_id = cm.pollutant_y
+    #             AND po.pollobs_date = wo.weatherobs_date
+    #             AND po.location_id = wo.location_id
+    #         WHERE cm.is_active = 1
+    #             AND wo.weatherobs_date BETWEEN :start AND :end
+    #         ORDER BY cm.corrmet_id, wo.location_id, wo.weatherobs_date
+    #         """
+    #     )
+    #     rows = self.db.execute(sql, {"start": start, "end": end}).fetchall()
+    #     return rows
+
+    # Tambahkan helper kecil di atas/sekitar fungsi classify
+    @staticmethod
+    def _min_n_for_period(period_name: str) -> int:
+        # Weekly window biasanya 5–7 observasi efektif
+        if period_name.upper().startswith("WEEK"):
+            return 5
+        return 12
+
+    def classify(self, pearson_r: float, spearman_rho: float, n_obs: int, period_name: str | None = None, p_p: float | None = None,p_s: float | None = None, alpha: float | None = None) -> str:
+
+        """
+        Versi baru tetap kompatibel:
+        - Jika period_name=None dan p_p/p_s=None => fallback ke logika lama.
+        - Jika period_name ada => pakai ambang n dinamis.
+        - Jika p_p & p_s ada => pakai signifikansi.
+        """
+
+        # 0) Tentukan alpha efektif
+        if alpha is None:
+            per = (period_name or "").upper()
+            if per.startswith("WEEK"):
+                eff_alpha = 0.20
+            else:
+                eff_alpha = 0.10
+        else:
+            eff_alpha = alpha
+
+        # 1) Ambang jumlah sampel
+        if period_name is None:
+            # fallback lama: weekly pun bakal sering INCONCLUSIVE
+            if n_obs < 12:
+                return "INCONCLUSIVE"
+        else:
+            if n_obs < self._min_n_for_period(period_name):
+                return "INCONCLUSIVE"
+
+        # 2) Tanda berlawanan => tidak reliabel
         if np.sign(pearson_r) != np.sign(spearman_rho):
             return "UNRELIABLE"
-        if max(abs(pearson_r), abs(spearman_rho)) < 0.20 or n_obs < 12:
+
+        # 3) Jika p-value tersedia: keduanya tak signifikan => INCONCLUSIVE
+        if (p_p is not None and p_s is not None) and (p_p >= eff_alpha and p_s >= eff_alpha):
             return "INCONCLUSIVE"
-        if abs(pearson_r - spearman_rho) < 0.20 and min(abs(pearson_r), abs(spearman_rho)) >= 0.30:
+
+        # 4) Kekuatan dan kedekatan nilai
+        delta = abs(pearson_r - spearman_rho)
+        min_abs = min(abs(pearson_r), abs(spearman_rho))
+        
+        if delta < 0.20 and min_abs >= 0.30:
             return "STABLE"
-        if abs(pearson_r - spearman_rho) < 0.40:
+        if delta < 0.40:
             return "CONSISTENT_WEAKER"
         return "NONLINEAR_OR_OUTLIERS"
 
     def _process_range(self, start: date, end: date, period_name: str, processing_date: date):
         logger.info(f"Processing range {start} to {end} as {period_name}")
-        rows = self.fetch_pairs(start, end)
+
+        # 2a) Ambil data AGG kota per hari
+        rows = self.fetch_pairs(start, end, city_id=DEFAULT_CITY_ID)
         if not rows:
             logger.warning("No rows found for period %s", period_name)
             return 0
-
-        df = pd.DataFrame(rows, columns=["corrmet_id", "location_id", "obs_date", "wx_val", "py_val"])
+        
+        # 2b) DF TANPA location_id; group by corrmet_id saja
+        df = pd.DataFrame(rows, columns=["corrmet_id", "obs_date", "wx_val", "py_val"])
         inserted = 0
-        for (corrmet_id, location_id), g in df.groupby(["corrmet_id", "location_id"]):
+
+        for corrmet_id, g in df.groupby("corrmet_id"):
             wx = g["wx_val"].astype(float).values
             py = g["py_val"].astype(float).values
+
+            # 1. Bersihkan data dari NaN / inf
+            mask = np.isfinite(wx) & np.isfinite(py)
+            wx, py = wx[mask], py[mask]
+
+            # 2. Cek minimal panjang
             if len(wx) < 2 or len(py) < 2:
                 continue
-            try:
-                pearson_r, _ = pearsonr(wx, py)
-                spearman_rho, _ = spearmanr(wx, py)
-            except Exception as e:
-                logger.error("Correlation error for corrmet_id=%s loc=%s: %s", corrmet_id, location_id, e)
-                continue
 
-            classification = self.classify(pearson_r, spearman_rho, len(wx))
+            # 3. Kalau varians nol → semua nilai sama → korelasi meaningless
+            if np.nanstd(wx) == 0 or np.nanstd(py) == 0:
+                classification = "INCONCLUSIVE"
+            else:
+                try:
+                    pearson_r, p_p = pearsonr(wx, py)
+                    spearman_rho, p_s = spearmanr(wx, py)
+                except Exception as e:
+                    logger.error("Correlation error for corrmet_id=%s: %s", corrmet_id, e)
+                    continue
+
+                # 4. Panggil classify baru dengan parameter tambahan
+                classification = self.classify(
+                    pearson_r=pearson_r,
+                    spearman_rho=spearman_rho,
+                    n_obs=len(wx),
+                    period_name=period_name,  # auto: WEEK* => 0.20, selain itu => 0.10
+                    p_p=p_p,                  # p-value Pearson
+                    p_s=p_s,                  # p-value Spearman
+                    # alpha=0.10,               # default threshold signifikansi
+                )
+
+            # 5. Simpan hasil ke tabel correlation_result (INSERT: gunakan location_id agregat kota)
             insert_sql = text(
                 """
                 INSERT INTO correlation_result
@@ -105,7 +241,7 @@ class PearsonPipeline:
             self.db.execute(
                 insert_sql,
                 {
-                    "loc": location_id,
+                    "loc": CITY_AGG_LOC_ID, # pakai lokasi agregat kota
                     "corr": corrmet_id,
                     "period": period_name,
                     "proc": processing_date,
@@ -114,6 +250,7 @@ class PearsonPipeline:
                 },
             )
             inserted += 1
+
         self.db.commit()
         logger.info("Inserted %s correlation_result rows for %s", inserted, period_name)
         return inserted

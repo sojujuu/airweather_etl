@@ -20,7 +20,7 @@ for a in "$@"; do
   fi
 done
 
-START_DATE=${args[1]:-2024-01-01}
+START_DATE=${args[1]:-2014-01-01}
 END_DATE=${args[2]:-2024-12-31}
 
 # Move to project root (assumes this file lives in ./scripts/)
